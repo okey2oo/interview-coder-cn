@@ -24,6 +24,11 @@ export function OverlayToolbar() {
   const actions = TOOLBAR_ACTIONS[inConversationPage ? 'conversation' : 'screenshot']
   const visibleCount = useVisibleActionCount(barRef, actions.length)
 
+  // Main sizes this window in whole buttons of the mode on screen
+  useEffect(() => {
+    window.api.setToolbarActionCount(actions.length)
+  }, [actions.length])
+
   // This window's store is its own copy, so the state main pushes has to be
   // relayed here; otherwise the toolbar's own buttons show stale state. The
   // page may have been reported before this window loaded, hence the fetch
@@ -56,19 +61,21 @@ export function OverlayToolbar() {
       {actions.slice(0, visibleCount).map(({ action, Icon }) => (
         <ToolbarButton key={action} action={action} Icon={Icon} hoverDelay={hoverDelay} />
       ))}
-      {/* Always on, width only: the height is the button row. main.css keeps
-          these edges from ever showing a resize cursor. `nonActivating` because
-          Windows eats this window's presses, see ToolbarButton below */}
-      <WindowResizeHandles enabled axis="x" nonActivating />
+      {/* Always on, right edge only: main keeps the left edge on the main
+          window's and the width in whole buttons. main.css keeps the edge from
+          ever showing a resize cursor. `nonActivating` because Windows eats
+          this window's presses, see ToolbarButton below */}
+      <WindowResizeHandles enabled edges="right" nonActivating />
     </div>
   )
 }
 
 /**
  * Buttons keep their size when the toolbar window is resized; the ones that no
- * longer fit are dropped from the end, so a narrowed toolbar never shows a
- * sliver of a button. The bar's own width never depends on its children, so
- * measuring it here cannot feed back into the layout.
+ * longer fit are dropped from the end. Main sizes the window to whole buttons,
+ * so this only has to count them; the pixel of slack covers fractional scaling
+ * rounding the window a pixel narrower. The bar's own width never depends on
+ * its children, so measuring it here cannot feed back into the layout.
  */
 function useVisibleActionCount(
   barRef: RefObject<HTMLDivElement | null>,
@@ -82,7 +89,7 @@ function useVisibleActionCount(
 
     const measure = () => {
       const available = bar.clientWidth - BAR_PADDING * 2
-      const fits = Math.floor((available + BUTTON_GAP) / (BUTTON_SIZE + BUTTON_GAP))
+      const fits = Math.floor((available + BUTTON_GAP + 1) / (BUTTON_SIZE + BUTTON_GAP))
       setCount(Math.min(actionCount, Math.max(1, fits)))
     }
 
@@ -107,7 +114,7 @@ function useVisibleActionCount(
  * ahead of it — and therefore never a click. Moves are untouched, which is why
  * hover dwell has always worked there.
  */
-function ToolbarButton({
+export function ToolbarButton({
   action,
   Icon,
   hoverDelay

@@ -1,9 +1,13 @@
 import { join } from 'node:path'
-import { BrowserWindow, screen } from 'electron'
+import { BrowserWindow, ipcMain, screen } from 'electron'
 import { is } from '@electron-toolkit/utils'
 
-/** Room for every button of the longer mode's toolbar: 16 × 28px, 2px gaps, 8px padding each side */
-const TOOLBAR_WIDTH = 494
+/** Mirrors `.overlay-toolbar` in main.css: `p-2` around `size-7` buttons with `gap-0.5` */
+const BAR_PADDING = 8
+const BUTTON_SIZE = 28
+const BUTTON_GAP = 2
+/** Each mode's own buttons and 收起 come first, so a narrowed toolbar always keeps them */
+const MIN_TOOLBAR_BUTTONS = 5
 const TOOLBAR_HEIGHT = 44
 const TOOLBAR_INSET = 4
 /** Mirrors the renderer's default opacity setting, until the renderer syncs the real one */
@@ -13,15 +17,32 @@ let toolbarWindow: BrowserWindow | null = null
 let ownerWindow: BrowserWindow | null = null
 /** Whether the renderer wants the toolbar on screen (main page + enabled in settings) */
 let isToolbarWanted = false
+/** The 极简悬浮条 stands in for both windows; nothing may bring the toolbar back meanwhile */
+let isToolbarSuppressed = false
 let toolbarOpacity = DEFAULT_OPACITY
+/** How many buttons the mode on screen has, reported by the toolbar's renderer */
+let actionCount = 17
 /**
- * The size the user dragged the toolbar to, tracked here instead of being read
- * back off the window. Windows encloses in both directions of the DIP <-> pixel
- * conversion, so at fractional display scaling a getBounds() -> setBounds()
- * round trip hands back a window one pixel larger; syncToolbarBounds runs on
- * every move event of a window drag, which turned that into unbounded growth.
+ * How many buttons the user narrowed the toolbar to; null for all of them.
+ * The width is derived from it, never read back off the window: Windows
+ * encloses in both directions of the DIP <-> pixel conversion, so at fractional
+ * scaling a getBounds() -> setBounds() round trip grows the window a pixel, and
+ * syncToolbarBounds runs on every move event of a main window drag.
  */
-let toolbarSize = { width: TOOLBAR_WIDTH, height: TOOLBAR_HEIGHT }
+let buttonCount: number | null = null
+
+/** Exactly whole buttons: no sliver of one, and no empty strip after the last */
+function toolbarWidth(): number {
+  const count = Math.min(buttonCount ?? actionCount, actionCount)
+  return BAR_PADDING * 2 + count * BUTTON_SIZE + (count - 1) * BUTTON_GAP
+}
+
+// The two modes have different buttons, so the width follows the page on screen
+ipcMain.on('toolbar:action-count', (event, count: number) => {
+  if (!toolbarWindow || event.sender !== toolbarWindow.webContents) return
+  actionCount = count
+  syncToolbarBounds()
+})
 
 /**
  * Click-through alternative to the global shortcuts: a small always-on-top
@@ -29,7 +50,7 @@ let toolbarSize = { width: TOOLBAR_WIDTH, height: TOOLBAR_HEIGHT }
  */
 export function createToolbarWindow(parent: BrowserWindow): void {
   toolbarWindow = new BrowserWindow({
-    width: TOOLBAR_WIDTH,
+    width: toolbarWidth(),
     height: TOOLBAR_HEIGHT,
     frame: false,
     transparent: true,
@@ -87,9 +108,8 @@ function syncToolbarBounds(): void {
 
   const mainBounds = ownerWindow.getBounds()
   const workArea = screen.getDisplayMatching(mainBounds).workArea
-  // Keep whatever size the user dragged it to; the constants only seed the window
-  const width = Math.min(toolbarSize.width, workArea.width)
-  const height = Math.min(toolbarSize.height, workArea.height)
+  const width = Math.min(toolbarWidth(), workArea.width)
+  const height = Math.min(TOOLBAR_HEIGHT, workArea.height)
   toolbarWindow.setBounds({
     x: Math.min(Math.max(mainBounds.x, workArea.x), workArea.x + workArea.width - width),
     y: Math.max(workArea.y, mainBounds.y - height - TOOLBAR_INSET),
@@ -100,7 +120,7 @@ function syncToolbarBounds(): void {
 
 /** Show the toolbar only if the renderer asked for it and the main window is on screen */
 export function showToolbar(): void {
-  if (!isToolbarWanted) return
+  if (!isToolbarWanted || isToolbarSuppressed) return
   if (!toolbarWindow || toolbarWindow.isDestroyed()) return
   if (!ownerWindow || ownerWindow.isDestroyed() || !ownerWindow.isVisible()) return
 
@@ -114,12 +134,18 @@ export function hideToolbar(): void {
 }
 
 /**
- * Record a size the user dragged the toolbar to, so that syncToolbarBounds can
- * reapply it without ever reading it back from the window.
+ * A drag of the toolbar's right edge to `width`: the toolbar keeps the nearest
+ * whole number of buttons, between its first few and all of them, and stays
+ * glued to the main window's left edge. False for any other window.
  */
-export function noteToolbarResize(window: BrowserWindow, width: number, height: number): void {
-  if (window !== toolbarWindow) return
-  toolbarSize = { width, height }
+export function resizeToolbar(window: BrowserWindow, width: number): boolean {
+  if (window !== toolbarWindow) return false
+  const fits = Math.round((width - BAR_PADDING * 2 + BUTTON_GAP) / (BUTTON_SIZE + BUTTON_GAP))
+  const count = Math.min(actionCount, Math.max(MIN_TOOLBAR_BUTTONS, fits))
+  // All of them: a mode with more buttons shows all of its own too
+  buttonCount = count === actionCount ? null : count
+  syncToolbarBounds()
+  return true
 }
 
 /**
@@ -132,6 +158,20 @@ export function setToolbarWanted(wanted: boolean): void {
     showToolbar()
   } else {
     hideToolbar()
+  }
+}
+
+/**
+ * Keep the toolbar off screen while the 极简悬浮条 is up. On Windows the main
+ * window is only soft-hidden then, which still counts as visible, so the
+ * visibility of the main window alone cannot keep it away.
+ */
+export function setToolbarSuppressed(suppressed: boolean): void {
+  isToolbarSuppressed = suppressed
+  if (suppressed) {
+    hideToolbar()
+  } else {
+    showToolbar()
   }
 }
 

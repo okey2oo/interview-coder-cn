@@ -14,6 +14,7 @@ Key capabilities:
 - 资料库: the user's own material (resume, prepared Q&A, notes; imported from PDF / Word / Markdown / TXT or pasted) goes in front of each mode's system prompt
 - 对话模式 (conversation mode): a second page for voice interviews — the other side's sentences on the left, short AI hints on the right, no screenshots; hints come automatically when a sentence ends or on a shortcut
 - 手机同步: 截图模式's answer and 对话模式's hints mirrored read-only to a phone's browser — over the LAN (the app serves the page, scan a QR code) or through the user's own public relay (`relay/`)
+- 极简悬浮条: with the answer read on the phone, the main window folds away and only a small screen-share-invisible bar of the current mode's buttons (screenshot / hint, listening, paging) stays on screen
 - Configurable AI provider (OpenAI, SiliconFlow, OpenRouter, or any OpenAI-compatible API)
 
 ## Tech Stack
@@ -38,6 +39,7 @@ src/
 │   ├── legacy-name.ts       # Imported first: moves the userData folder named after the old package name
 │   ├── main-window.ts       # BrowserWindow creation (frameless, transparent, always-on-top)
 │   ├── toolbar-window.ts    # Overlay toolbar window: bounds/visibility/opacity glued to main window
+│   ├── mini-bar-window.ts   # 极简悬浮条 window: free-standing, shown instead of the main window and toolbar
 │   ├── shortcuts.ts         # Global shortcuts registration + 截图模式 AI streaming orchestration (largest file)
 │   ├── conversation.ts      # 对话模式: utterances, hint cards, automatic / manual hint triggering
 │   ├── stream.ts            # consumeStream() shared by both modes (answer and reasoning chunks), API error messages, image-refusal detection
@@ -82,6 +84,7 @@ src/
         │   ├── AppStatusBar.tsx    # Loading indicator + request timer, follow-up dialog, shortcut hints
         │   ├── TranscriptionBar.tsx # Absolute-positioned real-time transcription overlay
         │   ├── OverlayToolbar.tsx  # Contents of the toolbar window (route `/toolbar`)
+        │   ├── MiniBar.tsx   # Contents of the 极简悬浮条 window (`#/mini-bar`, rendered without App)
         │   └── PrerequisitesChecker.tsx  # Modal for API key setup
         ├── conversation/     # 对话模式 page (`/conversation`)
         │   ├── index.tsx     # Layout + snapshot / event sync with main's conversation
@@ -132,6 +135,7 @@ src/
         │   ├── knowledge.ts       # useKnowledgeDocs() (the list from main), per-mode usage, 字 / token formatting
         │   ├── api-profiles.ts    # ApiProfile type + factory (one saved URL / key / model set)
         │   ├── use-elapsed.ts     # Status bar timer: local tick while loading, main's measured value after
+        │   ├── use-window-drag.ts # useWindowDrag(): a cursor-tracked resize or move, ended by any pointerup / blur
         │   ├── utils/
         │   │   ├── index.ts     # cn() helper, getCloneableFields()
         │   │   ├── env.ts       # isMac, platformAlt
@@ -207,12 +211,14 @@ relay/                       # 手机同步's relay + phone page: its own packag
 - `sendFollowUpQuestion` — follow-up within conversation
 - `triggerAction` / `setToolbarVisible` — overlay toolbar: run a shortcut action, toggle the window
 - `selectScreenshotDir` / `selectCodeDir` / `selectConversationDir` — folder pickers for the auto-save settings
-- `window-resize-start` / `window-resize-stop` (`send`, not `invoke`) — begin/end a cursor-tracked window resize
+- `window-resize-start` / `window-resize-stop` (`send`, not `invoke`) — begin/end a cursor-tracked window resize, or a move (`'move'`, the 极简悬浮条's grip)
 - `start-transcription` / `stop-transcription` — speech transcription lifecycle; start takes `{ purpose, maxSentenceSilence }`
 - `conversation:get-snapshot` / `conversation:request-hint` / `conversation:stop-hints` / `conversation:clear` — 对话模式
 - `get-transcription-text` / `clear-transcription-text` — read/clear accumulated text
 - `update:get-status` / `update:download` / `update:install` — a newer release; the last two are Windows only
 - `knowledge:list` / `knowledge:get-text` / `knowledge:pick-files` / `knowledge:import-files` / `knowledge:create` / `knowledge:update` / `knowledge:reimport` / `knowledge:remove` — 资料库; imports and reimports return their failures as values, not rejections
+- `mini-bar:get-state` — the 极简悬浮条 fetches which mode's buttons to show and the listening state on load
+- `toolbar:action-count` (`send`) — how many buttons the toolbar's mode has, which bounds its width
 - `mobile:get-status` — 手机同步: each path's state, the viewer links (LAN: one per local address, best first) and phone counts; polled by the settings page
 
 **Main → Renderer (send):**
@@ -225,6 +231,8 @@ relay/                       # 手机同步's relay + phone page: its own packag
 - `switch-api-profile` — step the current mode's AI profile (`1` / `-1`); the list lives in the renderer store
 - `cycle-scene` — step the current mode to its next prompt scene; the renderer owns the list and syncs the new prompt back
 - `switch-mode` — show the other mode's page (shortcut / toolbar); the renderer owns the routes
+- `mini-bar-entered` — the 极简悬浮条 came up from the settings / help page; the hidden main window goes to `lastMode`'s page
+- `mini-bar-state` — the 极简悬浮条's mode and whether 对话模式 is listening (also fetched with `mini-bar:get-state` on load)
 - `vision-unsupported` — a screenshot was refused for want of image input (profile id); the renderer marks the profile text-only if nothing better is known
 - `toggle-hint-mode` — flip 对话模式 between automatic and manual hints; the renderer owns the setting
 - `conversation-utterance` / `conversation-utterance-removed` / `conversation-hint` / `conversation-hint-chunk` / `conversation-cleared` / `conversation-notice` — 对话模式 state from main
@@ -273,17 +281,18 @@ A second `BrowserWindow` (`src/main/toolbar-window.ts`) that renders the `/toolb
 - Buttons carry no `title`: native tooltips are drawn outside the window and are not covered by content protection
 - It never receives a `click` on Windows: `focusable: false` makes Chromium answer the press's WM_MOUSEACTIVATE with `MA_NOACTIVATEANDEAT`, so the button-down is dropped by the OS. Only the release and the moves arrive — anything interactive in this window must hang off `mouseup`/`pointermove`, never `click` or `pointerdown`
 - `TOOLBAR_ACTIONS` (`lib/toolbar-actions.ts`) holds one list per mode and drives both the toolbar and its help page section; the toolbar picks the list from `inConversationPage` (pushed by main, fetched with `getAppState` on load). `triggerAction` is validated against `clickableActions` in `shortcuts.ts`
-- Resizing the toolbar window never rescales its buttons: `OverlayToolbar` measures the bar and renders only the actions that fit, dropping the rest from the end
+- Resizing the toolbar window never rescales its buttons, it shows fewer of them: only the right edge drags (the left stays on the main window's), and main keeps the width at a whole number of buttons (`resizeToolbar()`), from `MIN_TOOLBAR_BUTTONS` (each mode's own buttons and 收起 come first) to all of the mode on screen, which the toolbar reports (`setToolbarActionCount`). The choice is a button count, never a width read back off the window, so a mode with more buttons is not cut short and nothing creeps at fractional scaling. `OverlayToolbar` then measures the bar and renders the actions that fit
 
 ### Window Resizing
 
 Both windows are created with `resizable: false` — toggling Electron's native resizable style breaks transparency on Windows — so resizing is implemented by hand:
-- `WindowResizeHandles` renders eight fixed-position edge/corner divs — or, with `axis="x"`, just the two side edges — and sends only `window-resize-start` (pointerdown) and `window-resize-stop`
+- `WindowResizeHandles` renders eight fixed-position edge/corner divs — or, with `edges="right"`, just the right edge — and sends only `window-resize-start` (pointerdown) and `window-resize-stop`
 - `nonActivating` (the toolbar) also starts the drag from the first pointermove made with the button held, because Windows never delivers that window's pointerdown (see Overlay Toolbar)
 - `src/main/window-resize.ts` then polls `screen.getCursorScreenPoint()` and calls `setBounds()`. The cursor is sampled in main because the toolbar is a non-activating panel on macOS and never receives a drag's pointer moves
+- The direction `move` (the 极简悬浮条's grip, through `useWindowDrag()`) moves the window instead, writing a fixed size with every position (the bar's own, else the size at drag start), never `setPosition()` alone: that writes back the size Windows reports, which across screens of different scaling (125% / 200%) is converted at the wrong one, so the window grew while dragged. Windows still rescales it once on the frame it crosses over, so the size is put back once more 100ms after the drop
 - The drag is ended by a `window`-level `pointerup`/`pointercancel`/`blur` listener, with a 30s safety timeout in main as the last resort
 - The handles sit at `z-index: 2147483647`; anything flush against a window edge (e.g. `#app-header .actions`) must raise itself above them or it becomes unclickable
-- The main window's handles are gated by the `resizable` setting; the toolbar's are always on but width-only (`axis="x"` — its height is the button row), with the resize cursor suppressed in `main.css`
+- The main window's handles are gated by the `resizable` setting; the toolbar's are always on but right edge only (`edges="right"` — its height is the button row, its left edge the main window's), with the resize cursor suppressed in `main.css`
 
 ### AI Integration
 
@@ -303,6 +312,17 @@ Both windows are created with `resizable: false` — toggling Electron's native 
 - Conversation history (`conversationMessages`) is maintained in `shortcuts.ts` as `ModelMessage[]`
 - Reasoning: `ai.ts` turns `fullStream` into `StreamChunk`s tagged `reasoning` or `text` (`stream.ts`); only the text goes into `conversationMessages`. 截图模式 shows it per request: `clearSolution()` opens round 0, each appended screenshot / follow-up sends `reasoning-round-start` after its separator, and each round (`reasoningRounds`, with the answer length when it began as `textStart`) renders its block above its own slice of the answer — three streaming lines, folded once the answer starts. Both modes render it with `MarkdownRenderer compact` (OpenAI's summaries open with a `**title**`), whose whole-line grid in `base.css` keeps those three lines whole. 对话模式 keeps it on the card (`HintCard.reasoning`) and shows it once the card is published, not per chunk
 - When an answer finishes naturally (not stopped, not failed), `handleGeneratedCode()` in `save-code.ts` copies its first code block to the clipboard and/or saves it as `<base><n>.<ext>` (extension from the fence language); both are opt-in and silent
+
+### 极简悬浮条 (Mini Bar)
+
+For use with 手机同步: the answer is read on the phone, so the desktop keeps nothing but a small bar of a drag grip and five buttons, one list per mode (`MINI_BAR_ACTIONS` in `lib/toolbar-actions.ts`) — 截图模式 截图解题 · 追加截图, 对话模式 出提示 · 开始/停止监听, then 上翻 · 下翻 · 展开 in both:
+- Its own window (`src/main/mini-bar-window.ts`), not the toolbar: it is on screen exactly while the main window is hidden, so it cannot be glued to it or be its child. Otherwise built like the toolbar — `focusable: false`, content protection, `panel` on macOS, an empty title — so the toolbar's rules hold (no `title`, no `click` / `pointerdown`), and its `ToolbarButton` is reused, hover dwell included. Main pushes it the toolbar's settings and opacity
+- Rendered straight from `main.tsx` without App (like the region picker), so it never syncs settings or registers shortcuts
+- `toggleMiniBar` (shortcut, the toolbar's 收起 button, its own 展开 button, a button in 设置 → 手机同步) runs `enterMiniBar()` / `exitMiniBar()` in `shortcuts.ts`: the main window is soft-hidden on Windows and hidden elsewhere, the toolbar is held off with `setToolbarSuppressed()` (a soft-hidden window still counts as visible), and the main window stays on the mode page it is on, so 对话模式's listening goes on (截图模式's page stops it on mount). From the settings / help page `mini-bar-entered` sends it to `lastMode`'s page, which the bar's actions need. Leaving always brings the main window back
+- Its buttons follow `MiniBarState` in main (`updateMiniBarState()`): `mode` from the page-change handler, `listening` from `conversation.ts`'s transcription start / end, which turns the microphone into `MicOff` while not listening
+- The paging buttons are there for apps that swallow global shortcuts: with hover dwell (悬停触发) they page both the main window and the phones (`pageMobile()`), never touching the exam page
+- Meanwhile `switchMode` does nothing, `hideOrShowMainWindow` hides / shows the bar instead, the window-moving shortcuts move the bar (`moveMiniBar()`), and a region pick hides it too
+- First shown at the main window's top-left corner, then where it was dragged, for the session; kept inside a connected display
 
 ### Capture Region
 
@@ -373,7 +393,7 @@ Material the user wants the AI to draw on — a resume, prepared Q&A, notes — 
 
 What the mode pages show, mirrored read-only to a phone's browser (`src/main/mobile-sync.ts`). The app is the only source of truth; phones only display:
 - Main pushes the **whole** state (`MobileState` in `src/shared/mobile.ts`) as one JSON message, at most every 200ms, and the relay keeps the last one for phones that open later. No diffs, no history: a phone that reconnects just gets the current state. `v` is the format version for when the page and the app drift apart. Since the whole state is resent, it must stay under the relay's `MAX_PAYLOAD` (1 MiB): 截图模式's answer goes out as its last `MOBILE_TEXT_LIMIT` characters, and the relay client drops a frame that is still too big instead of sending it (which would close with 1009 and resend it on every reconnect)
-- Parts of the state are `registerMobileSource()`d by their owners — 截图模式's answer in `shortcuts.ts` (`mobileAnswer`, appended in `sendAnswerChunk()`), 对话模式's last cards and sentences in `conversation.ts` — which call `markMobileDirty()` on change. A new part is a new source key plus its rendering in `relay/public/app.js`. `mode` follows the page on screen (the page-change handler marks dirty) and keeps the last mode on the settings / help pages
+- Parts of the state are `registerMobileSource()`d by their owners — 截图模式's answer in `shortcuts.ts` (`mobileAnswer`, appended in `sendAnswerChunk()`), 对话模式's last cards and sentences, whether it is listening and why listening failed (`listenError`, from `onTranscriptionError()`) in `conversation.ts` — which call `markMobileDirty()` on change. A new part is a new source key plus its rendering in `relay/public/app.js`. `mode` follows the page on screen (the page-change handler marks dirty) and keeps the last mode on the settings / help pages
 - The page shortcuts (`pageUp` / `pageDown`) page the phones too, for a phone read without being touched: `pageMobile()` moves `paging`, a count in the state, and the page scrolls the tab in view by how much it changed since the last message. Presses within one push add up; the first state after (re)connecting or a `host` message only sets the baseline, so nothing is replayed and a restarted app counting from 0 pages nothing
 - `relay/relay.mjs` is the one implementation of the protocol, used twice: by `relay/server.mjs` on the user's server, where the app connects to `/host` as a client (`Authorization: Bearer RELAY_KEY`), and in-process by main for 局域网 on port 8790, where `publish()` stands in for the host. The phone page in `relay/public/` is inlined into main with `?raw`, so both serve the same files
 - One key per path (`mobileLanKey`, generated; `mobileRelayKey`, the server's `RELAY_KEY`). Phones never get the key, only `deriveViewerToken(key)` (HMAC) in the link's fragment (`#t=`, never sent in requests for the page): it can watch but not push. `/check` tells the page a revoked link (401) or a full house (503, `maxViewers`: 10 by default, `MAX_VIEWERS` on the server; it keeps retrying) from a network failure; the settings page shows the limit next to the viewer count. A second app connecting with the same key takes over and the first is closed with 4000, which it does not retry

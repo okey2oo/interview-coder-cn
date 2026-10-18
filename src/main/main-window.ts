@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { shell, BrowserWindow } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import { createToolbarWindow } from './toolbar-window'
+import { createMiniBarWindow } from './mini-bar-window'
 
 export function applyContentProtection(window: BrowserWindow, forceReset = false): void {
   if (!window || window.isDestroyed()) return
@@ -48,6 +49,8 @@ export function createWindow(): void {
   global.mainWindow = mainWindow
   // The toolbar follows the main window's position and visibility on its own
   createToolbarWindow(mainWindow)
+  // 极简悬浮条, shown in place of both while the answers are read on a phone
+  createMiniBarWindow(mainWindow)
 
   mainWindow.setMenuBarVisibility(false)
 

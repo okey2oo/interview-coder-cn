@@ -11,6 +11,7 @@ import type { ConversationSnapshot, HintCard, Utterance } from '../shared/conver
 import type { KnowledgeDoc, KnowledgeImportResult, KnowledgePatch } from '../shared/knowledge'
 import type { AvailableUpdate } from '../shared/update'
 import type { MobileSyncStatus } from '../shared/mobile'
+import type { MiniBarState } from '../main/mini-bar-window'
 
 // Custom APIs for renderer
 const api = {
@@ -35,8 +36,9 @@ const api = {
   listModels: (baseURL: string, apiKey: string, options?: ListModelsOptions) =>
     ipcRenderer.invoke('listModels', baseURL, apiKey, options) as Promise<ModelListResult>,
 
-  // Resize transparent frameless windows without toggling Electron's native resizable style
-  startWindowResize: (direction: 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw') =>
+  // Resize transparent frameless windows without toggling Electron's native resizable style;
+  // `move` drags the whole window (the 极简悬浮条's grip)
+  startWindowResize: (direction: 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw' | 'move') =>
     ipcRenderer.send('window-resize-start', direction),
   stopWindowResize: () => ipcRenderer.send('window-resize-stop'),
 
@@ -85,8 +87,11 @@ const api = {
       | 'generateHint'
       | 'toggleHintMode'
       | 'switchMode'
+      | 'toggleMiniBar'
   ) => ipcRenderer.invoke('triggerAction', action),
   setToolbarVisible: (visible: boolean) => ipcRenderer.invoke('setToolbarVisible', visible),
+  // The toolbar's width is whole buttons of the mode on screen, so main needs their number
+  setToolbarActionCount: (count: number) => ipcRenderer.send('toolbar:action-count', count),
   // Set click-through from the settings page; returns the state main ended up in
   setIgnoreMouse: (ignore: boolean) =>
     ipcRenderer.invoke('setIgnoreMouse', ignore) as Promise<boolean>,
@@ -135,6 +140,23 @@ const api = {
   },
   removeSwitchModeListener: () => {
     ipcRenderer.removeAllListeners('switch-mode')
+  },
+
+  // The 极简悬浮条 came up over the settings / help page: its buttons need a mode page behind them
+  onMiniBarEntered: (callback: () => void) => {
+    ipcRenderer.on('mini-bar-entered', () => callback())
+  },
+  removeMiniBarEnteredListener: () => {
+    ipcRenderer.removeAllListeners('mini-bar-entered')
+  },
+
+  // The 极简悬浮条's own window: which mode's buttons, and whether 对话模式 is listening
+  getMiniBarState: (): Promise<MiniBarState> => ipcRenderer.invoke('mini-bar:get-state'),
+  onMiniBarState: (callback: (state: MiniBarState) => void) => {
+    ipcRenderer.on('mini-bar-state', (_event, state: MiniBarState) => callback(state))
+  },
+  removeMiniBarStateListener: () => {
+    ipcRenderer.removeAllListeners('mini-bar-state')
   },
 
   // A screenshot was refused because this profile's model takes no images

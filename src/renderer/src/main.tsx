@@ -1,9 +1,10 @@
 import './assets/main.css'
 
-import { StrictMode } from 'react'
+import { StrictMode, type ComponentType } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import RegionPicker from './region-picker'
+import { MiniBar } from './coder/MiniBar'
 import { useSettingsStore } from './lib/store/settings'
 import { applyTheme } from './lib/theme'
 
@@ -18,10 +19,16 @@ if (!window.location.hash || window.location.hash === '#/') {
   if (lastMode === 'conversation') window.location.hash = '#/conversation'
 }
 
-// The capture-region picker is a throwaway window per screen: it must not run
-// App's settings sync or shortcut registration, so it skips App altogether
-const isRegionPicker = window.location.hash === '#/region-picker'
+// The capture-region picker (a throwaway window per screen) and the 极简悬浮条
+// must not run App's settings sync or shortcut registration, so they skip App
+const ROOTS: Record<string, ComponentType> = {
+  '#/region-picker': RegionPicker,
+  '#/mini-bar': MiniBar
+}
+const Root = ROOTS[window.location.hash] ?? App
 
 createRoot(document.getElementById('root')!).render(
-  <StrictMode>{isRegionPicker ? <RegionPicker /> : <App />}</StrictMode>
+  <StrictMode>
+    <Root />
+  </StrictMode>
 )

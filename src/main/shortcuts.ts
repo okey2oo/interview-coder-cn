@@ -7,8 +7,16 @@ import {
   hideToolbar,
   setToolbarWanted,
   reassertToolbarTopMost,
-  sendToToolbar
+  sendToToolbar,
+  setToolbarSuppressed
 } from './toolbar-window'
+import {
+  showMiniBar,
+  hideMiniBar,
+  isMiniBarVisible,
+  moveMiniBar,
+  updateMiniBarState
+} from './mini-bar-window'
 import { takeScreenshot } from './take-screenshot'
 import { pickCaptureRegion } from './region-picker'
 import type { CaptureRegion } from '../shared/capture-region'
@@ -251,6 +259,52 @@ function keepWindowInFront(window: BrowserWindow) {
 }
 
 /**
+ * 极简悬浮条: the answer is read on a phone (手机同步), so the main window and
+ * the toolbar go out of sight and only the screenshot buttons stay on screen.
+ * The main window keeps 截图模式's page, which the screenshot actions need.
+ */
+let isMiniBarOn = false
+
+function enterMiniBar(mainWindow: BrowserWindow) {
+  if (isMiniBarOn) return
+  isMiniBarOn = true
+  // First shown where the main window was, which is where the user is looking
+  showMiniBar(softHiddenPosition ?? (mainWindow.getPosition() as [number, number]))
+  setToolbarSuppressed(true)
+  if (process.platform === 'win32') {
+    softHideWindow(mainWindow)
+  } else {
+    stopBackgroundGuard()
+    mainWindow.hide()
+  }
+  // The bar acts on the mode page it was folded from, and keeps 对话模式
+  // listening; only from the settings or help page does it need one
+  if (!inModePage()) mainWindow.webContents.send('mini-bar-entered')
+}
+
+/** The 极简悬浮条 stands in for the hidden main window, so it is the one moved */
+function moveMainWindowBy(dx: number, dy: number) {
+  if (isMiniBarOn) {
+    moveMiniBar(dx, dy)
+    return
+  }
+  const mainWindow = global.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const [x, y] = mainWindow.getPosition()
+  mainWindow.setPosition(x + dx, y + dy)
+}
+
+function exitMiniBar(mainWindow: BrowserWindow) {
+  if (!isMiniBarOn) return
+  isMiniBarOn = false
+  hideMiniBar()
+  setToolbarSuppressed(false)
+  // Back even if it had been hidden before the bar came up: the user asked for it
+  if (isWindowSoftHidden) restoreSoftHiddenWindow(mainWindow)
+  if (!mainWindow.isVisible()) showMainWindow(mainWindow)
+}
+
+/**
  * Opacity is owned by the renderer settings store (persisted + synced back to
  * main), so the shortcut only asks the renderer to step it.
  */
@@ -352,6 +406,10 @@ setPageChangeHandler(() => {
   broadcastAppState()
   // The phones follow the mode on screen
   markMobileDirty()
+  // So does the 极简悬浮条, which keeps the last mode on the settings / help page
+  if (inModePage()) {
+    updateMiniBarState({ mode: state.inConversationPage ? 'conversation' : 'screenshot' })
+  }
 })
 
 /**
@@ -395,6 +453,9 @@ async function pickRegion(): Promise<CaptureRegion | null> {
   // left for whoever hid it to bring back.
   const wasHidden = isWindowSoftHidden
   softHideWindow(mainWindow)
+  // So is the 极简悬浮条, which stands where the main window would
+  const miniBarShown = isMiniBarVisible()
+  hideMiniBar()
   try {
     const region = await pickCaptureRegion(settings.captureRegion)
     if (region) {
@@ -404,6 +465,7 @@ async function pickRegion(): Promise<CaptureRegion | null> {
     return region
   } finally {
     if (!wasHidden) restoreSoftHiddenWindow(mainWindow)
+    if (miniBarShown && isMiniBarOn) showMiniBar()
   }
 }
 
@@ -478,7 +540,8 @@ async function runAnswer(
 /** Ask the renderer to show the other mode; it owns the routes */
 function switchMode() {
   const mainWindow = global.mainWindow
-  if (!mainWindow || mainWindow.isDestroyed() || !inModePage()) return
+  // The 极简悬浮条's buttons are 截图模式's only
+  if (!mainWindow || mainWindow.isDestroyed() || !inModePage() || isMiniBarOn) return
   mainWindow.webContents.send('switch-mode')
 }
 
@@ -486,6 +549,13 @@ const callbacks: Record<string, () => void> = {
   hideOrShowMainWindow: async () => {
     const mainWindow = global.mainWindow
     if (!mainWindow || mainWindow.isDestroyed()) return
+
+    // The 极简悬浮条 is all there is on screen then, so it is what hides
+    if (isMiniBarOn) {
+      if (isMiniBarVisible()) hideMiniBar()
+      else showMiniBar()
+      return
+    }
 
     if (process.platform === 'win32') {
       if (isWindowSoftHidden) {
@@ -706,33 +776,13 @@ const callbacks: Record<string, () => void> = {
     pageMobile(1)
   },
 
-  moveMainWindowUp: () => {
-    const mainWindow = global.mainWindow
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const [x, y] = mainWindow.getPosition()
-    mainWindow.setPosition(x, y - MOVE_STEP)
-  },
+  moveMainWindowUp: () => moveMainWindowBy(0, -MOVE_STEP),
 
-  moveMainWindowDown: () => {
-    const mainWindow = global.mainWindow
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const [x, y] = mainWindow.getPosition()
-    mainWindow.setPosition(x, y + MOVE_STEP)
-  },
+  moveMainWindowDown: () => moveMainWindowBy(0, MOVE_STEP),
 
-  moveMainWindowLeft: () => {
-    const mainWindow = global.mainWindow
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const [x, y] = mainWindow.getPosition()
-    mainWindow.setPosition(x - MOVE_STEP, y)
-  },
+  moveMainWindowLeft: () => moveMainWindowBy(-MOVE_STEP, 0),
 
-  moveMainWindowRight: () => {
-    const mainWindow = global.mainWindow
-    if (!mainWindow || mainWindow.isDestroyed()) return
-    const [x, y] = mainWindow.getPosition()
-    mainWindow.setPosition(x + MOVE_STEP, y)
-  },
+  moveMainWindowRight: () => moveMainWindowBy(MOVE_STEP, 0),
 
   toggleTranscription: () => {
     const mainWindow = global.mainWindow
@@ -767,6 +817,14 @@ const callbacks: Record<string, () => void> = {
 
   switchMode,
 
+  // From any page: the main window shows 截图模式's page when it comes back
+  toggleMiniBar: () => {
+    const mainWindow = global.mainWindow
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (isMiniBarOn) exitMiniBar(mainWindow)
+    else enterMiniBar(mainWindow)
+  },
+
   // Works on every page: it only sets up future screenshots
   pickCaptureRegion: () => {
     void pickRegion()
@@ -792,7 +850,8 @@ const clickableActions = new Set([
   'cycleScene',
   'generateHint',
   'toggleHintMode',
-  'switchMode'
+  'switchMode',
+  'toggleMiniBar'
 ])
 
 function unregisterShortcut(action: string) {

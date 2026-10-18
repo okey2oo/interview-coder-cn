@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { HashRouter, Routes, Route, useLocation } from 'react-router'
+import { HashRouter, Routes, Route, useLocation, useNavigate } from 'react-router'
 import { Toaster, toast } from 'sonner'
 import CoderPage from '@/coder'
 import ConversationPage from '@/conversation'
@@ -95,6 +95,7 @@ export default function App() {
       <HashRouter>
         <ToolbarVisibilityController />
         <WindowResizeController />
+        <MiniBarController />
         <Routes>
           <Route index element={<CoderPage />} />
           <Route path="conversation" element={<ConversationPage />} />
@@ -116,6 +117,22 @@ function WindowResizeController() {
 
   if (location.pathname === '/toolbar') return null
   return <WindowResizeHandles enabled={resizable} />
+}
+
+/**
+ * Folded from the settings / help page, the 极简悬浮条's buttons need a mode
+ * page behind them (main acts only there), so the hidden main window goes back
+ * to the last one; also where it comes back
+ */
+function MiniBarController() {
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    window.api.onMiniBarEntered(() => navigate(MODE_PATHS[useSettingsStore.getState().lastMode]))
+    return () => window.api.removeMiniBarEnteredListener()
+  }, [navigate])
+
+  return null
 }
 
 function ToolbarVisibilityController() {

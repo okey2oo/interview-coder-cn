@@ -3,6 +3,7 @@ import type { CaptureRegion } from '../shared/capture-region'
 import type { ApiProfile, AppMode } from '../shared/api-profile'
 import type { HintMode } from '../shared/conversation'
 import { setToolbarOpacity, syncToolbarSettings } from './toolbar-window'
+import { sendToMiniBar, setMiniBarOpacity } from './mini-bar-window'
 
 ipcMain.handle('getAppVersion', () => {
   return app.getVersion()
@@ -29,12 +30,12 @@ ipcMain.handle('updateAppSettings', (_event, _settings) => {
   }
   if ('opacity' in _settings) {
     setToolbarOpacity(settings.opacity)
+    setMiniBarOpacity(settings.opacity)
   }
   if ('toolbarHoverDelay' in _settings || 'theme' in _settings) {
-    syncToolbarSettings({
-      hoverDelay: settings.toolbarHoverDelay,
-      theme: settings.theme
-    })
+    const toolbarSettings = { hoverDelay: settings.toolbarHoverDelay, theme: settings.theme }
+    syncToolbarSettings(toolbarSettings)
+    sendToMiniBar('sync-toolbar-settings', toolbarSettings)
   }
 })
 

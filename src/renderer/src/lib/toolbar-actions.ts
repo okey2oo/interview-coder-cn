@@ -12,7 +12,9 @@ import {
   ImagePlus,
   Layers,
   Lightbulb,
+  Maximize2,
   Mic,
+  Minimize2,
   MousePointer2,
   Sun,
   SunDim,
@@ -57,6 +59,7 @@ export const TOOLBAR_ACTIONS: Record<AppMode, ToolbarAction[]> = {
     { action: 'appendScreenshot', Icon: ImagePlus, label: '追加截图' },
     { action: 'pickCaptureRegion', Icon: Crop, label: '框选截图区域' },
     { action: 'stopSolutionStream', Icon: CircleStop, label: '停止生成' },
+    { action: 'toggleMiniBar', Icon: Minimize2, label: '收起为极简悬浮条（解答看手机）' },
     ...COMMON_ACTIONS,
     { action: 'toggleTranscription', Icon: Mic, label: '开始/暂停语音转录' },
     { action: 'cycleScene', Icon: Layers, label: '切换到下一个提示词场景' },
@@ -67,8 +70,40 @@ export const TOOLBAR_ACTIONS: Record<AppMode, ToolbarAction[]> = {
     { action: 'toggleHintMode', Icon: Zap, label: '切换自动/手动出提示' },
     { action: 'stopSolutionStream', Icon: CircleStop, label: '停止生成提示' },
     { action: 'toggleTranscription', Icon: Mic, label: '开始/停止监听对方说话' },
+    { action: 'toggleMiniBar', Icon: Minimize2, label: '收起为极简悬浮条（提示看手机）' },
     ...COMMON_ACTIONS,
     { action: 'cycleScene', Icon: Layers, label: '切换到下一个提示词场景' },
     { action: 'switchMode', Icon: ArrowLeftRight, label: '切换到截图模式' }
+  ]
+}
+
+const MINI_BAR_PAGING: ToolbarAction[] = [
+  { action: 'pageUp', Icon: ChevronUp, label: '向上翻页（手机同步翻页）' },
+  { action: 'pageDown', Icon: ChevronDown, label: '向下翻页（手机同步翻页）' }
+]
+
+/**
+ * The 极简悬浮条's buttons per mode, after its drag grip. It stands in for the
+ * main window while the answer or the hints are read on a phone (手机同步), so
+ * it keeps what starts them, paging (which pages the phones too, for when an
+ * exam app swallows the shortcuts: hover dwell then pages without a click) and
+ * the way back.
+ */
+export const MINI_BAR_ACTIONS: Record<AppMode, ToolbarAction[]> = {
+  screenshot: [
+    { action: 'takeScreenshot', Icon: Camera, label: '截图解题（新开对话）' },
+    { action: 'appendScreenshot', Icon: ImagePlus, label: '追加截图' },
+    ...MINI_BAR_PAGING,
+    { action: 'toggleMiniBar', Icon: Maximize2, label: '展开完整窗口' }
+  ],
+  conversation: [
+    { action: 'generateHint', Icon: Lightbulb, label: '立即出提示（没有新内容时换个说法重出）' },
+    {
+      action: 'toggleTranscription',
+      Icon: Mic,
+      label: '开始/停止监听对方说话（停止时图标带斜线）'
+    },
+    ...MINI_BAR_PAGING,
+    { action: 'toggleMiniBar', Icon: Maximize2, label: '展开完整窗口' }
   ]
 }
